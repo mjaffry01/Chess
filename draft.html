@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Checkers — Human (Black) vs AI (White) (Kings + Multi-Jump)</title>
+  <style>
+    body{
+      margin:0;
+      min-height:100vh;
+      display:flex;
+      justify-content:center;
+      align-items:center;
+      background:#0f172a;
+      color:#e5e7eb;
+      font-family: Arial, sans-serif;
+      padding: 20px;
+    }
+    .wrap{ display:flex; gap:18px; align-items:flex-start; flex-wrap:wrap; }
+    .panel{
+      width: min(92vw, 330px);
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 14px;
+      padding: 14px 14px 10px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.25);
+    }
+    .title{ font-size:18px; font-weight:700; margin-bottom:6px; }
+    .meta{ font-size:13px; opacity:.9; line-height:1.35; }
+    .pill{
+      display:inline-block; padding:4px 10px; border-radius:999px;
+      border:1px solid rgba(255,255,255,0.18); margin-top:10px;
+      font-size:12px;
+    }
+    .btns{ display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+    button{
+      cursor:pointer;
+      border:1px solid rgba(255,255,255,0.18);
+      background: rgba(255,255,255,0.08);
+      color:#e5e7eb;
+      padding:8px 10px;
+      border-radius:10px;
+      font-weight:600;
+    }
+    button:hover{ background: rgba(255,255,255,0.12); }
+
+    .board{
+      display:grid;
+      grid-template-columns: repeat(8, 70px);
+      grid-template-rows: repeat(8, 70px);
+      border: 8px solid #8b5a2b;
+      border-radius: 14px;
+      overflow:hidden;
+      box-shadow: 0 16px 40px rgba(0,0,0,.35);
+    }
+    .cell{
+      width:70px; height:70px;
+      display:flex;
+      justify-content:center;
+      align-items:center;
+      user-select:none;
+      position:relative;
+    }
+    .dark{ background:#b45309; }
+    .light{ background:#fde68a; }
+
+    .piece{
+      width:52px; height:52px;
+      border-radius:50%;
+      box-shadow: 0 10px 18px rgba(0,0,0,.35);
+      cursor:pointer;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-weight:900;
+      font-size:18px;
+    }
+    .black{ background:#0b0b0b; color:#fff; }
+    .white{ background:#e5e7eb; color:#111; }
+
+    .selected .piece{
+      outline:4px solid #22c55e;
+      outline-offset:2px;
+    }
+
+    .hint{
+      width:18px; height:18px;
+      border-radius:50%;
+      background: rgba(34,197,94,0.9);
+      box-shadow: 0 0 0 4px rgba(34,197,94,0.18);
+      position:absolute;
+    }
+
+    .status{
+      margin-top:10px;
+      font-size:13px;
+      opacity:.95;
+      line-height:1.35;
+    }
+    .small{ font-size:12px; opacity:.8; margin-top:8px; }
+  </style>
+</head>
+<body>
+
+<div class="wrap">
+  <div>
+    <div class="board" id="board"></div>
+  </div>
+
+  <div class="panel">
+    <div class="title">Checkers</div>
+    <div class="meta">
+      <b>Human:</b> Black (plays first)<br/>
+      <b>Computer:</b> White (Minimax AI)<br/>
+      ✅ Kings + ✅ Multi-jump<br/>
+      Rule: captures are <b>forced</b>.
+    </div>
+
+    <div class="pill" id="turnPill">Turn: Black</div>
+
+    <div class="btns">
+      <button id="resetBtn">Reset</button>
+      <button id="ai2">AI Depth 2</button>
+      <button id="ai4">AI Depth 4</button>
+      <button id="ai6">AI Depth 6</button>
+    </div>
+
+    <div class="status" id="status"></div>
+    <div class="small">
+      Tip: If you capture and another capture is possible, you must continue (multi-jump).
+    </div>
+  </div>
+</div>
+
+<script>
+  // ---------------- CONFIG ----------------
+  let AI_DEPTH = 4; // 2 fast, 4 good, 6 strong/slower
+
+  // Piece encoding:
+  // 'b' black man, 'B' black king
+  // 'w' white man, 'W' white king
+
+  const boardEl = document.getElementById("board");
+  const statusEl = document.getElementById("status");
+  const turnPill = document.getElementById("turnPill");
+
+  // ---------------- GAME STATE ----------------
+  let selected = null;         // {r,c}
+  let legalTargets = [];       // array of moves (full sequences)
+  let turn = "black";          // human starts
+  let board = makeInitialBoard();
+
+  // for multi-jump forcing: if not null, player must continue with this piece
+  let forcedChain = null;      // {r,c} during a capture chain
+
+  function makeInitialBoard(){
+    return Array.from({length:8}, (_,r)=>
+      Array.from({length:8}, (_,c)=>{
+        if ((r+c)%2===1){
+          if (r<3) return "w";
+          if (r>4) return "b";
+        }
+        return null;
+      })
+    );
+  }
+
+  // ---------------- RENDER ----------------
+  function render(){
+    boardEl.innerHTML = "";
+
+    for(let r=0;r<8;r++){
+      for(let c=0;c<8;c++){
+        const cell = document.createElement("div");
+        cell.className = `cell ${(r+c)%2 ? "dark":"light"}`;
+
+        if (selected && selected.r===r && selected.c===c) cell.classList.add("selected");
+
+        // hint dots for legal target squares (final landing squares for each move)
+        if (legalTargets.some(m => m.path[m.path.length-1].r===r && m.path[m.path.length-1].c===c)) {
+          const hint = document.createElement("div");
+          hint.className = "hint";
+          cell.appendChild(hint);
+        }
+
+        // piece
+        const v = board[r][c];
+        if(v){
+          const p = document.createElement("div");
+          const isBlack = (v==="b" || v==="B");
+          p.className = `piece ${isBlack ? "black":"white"}`;
+          if (v==="B" || v==="W") p.textContent = "♛";
+          cell.appendChild(p);
+        }
+
+        cell.onclick = () => onCellClick(r,c);
+        boardEl.appendChild(cell);
+      }
+    }
+
+    turnPill.textContent = `Turn: ${turn[0].toUpperCase()+turn.slice(1)}`;
+
+    const outcome = getOutcome(board);
+    if (outcome) {
+      statusEl.innerHTML = `<b>${outcome}</b>`;
+    } else {
+      if (turn==="black"){
+        if (forcedChain) {
+          statusEl.innerHTML = `Multi-jump: you must continue capturing with the <b>selected</b> piece.`;
+        } else {
+          statusEl.innerHTML = `Click a <b>black</b> piece, then click a green target square.`;
+        }
+      } else {
+        statusEl.innerHTML = "AI is thinking…";
+      }
+    }
+  }
+
+  // ---------------- USER INPUT ----------------
+  function onCellClick(r,c){
+    if (turn !== "black") return;
+    if (getOutcome(board)) return;
+
+    const v = board[r][c];
+
+    // If chain is forced, you can only select that one piece
+    if (forcedChain) {
+      if (!(r===forcedChain.r && c===forcedChain.c)) {
+        return; // ignore clicks elsewhere
+      }
+    }
+
+    // Select a black piece (man or king)
+    if (v==="b" || v==="B") {
+      // Build legal moves for BLACK respecting forced captures and forcedChain
+      const all = generateLegalMoves(board, "black");
+
+      const filtered = forcedChain
+        ? all.filter(m => m.sr===forcedChain.r && m.sc===forcedChain.c)
+        : all;
+
+      const pieceMoves = filtered.filter(m => m.sr===r && m.sc===c);
+
+      selected = pieceMoves.length ? {r,c} : null;
+      legalTargets = pieceMoves;
+
+      render();
+      return;
+    }
+
+    // Move if clicked a legal landing square
+    if (selected) {
+      const chosen = legalTargets.find(m => {
+        const end = m.path[m.path.length-1];
+        return end.r===r && end.c===c;
+      });
+      if (!chosen) return;
+
+      // Apply move
+      const result = applyMove(board, chosen);
+
+      // If capture chain continues, force it
+      if (result.chainContinues) {
+        forcedChain = { r: result.newPos.r, c: result.newPos.c };
+        selected = forcedChain;
+
+        // Recompute legal moves ONLY for this piece, only captures
+        const contMoves = generateCaptureMovesFrom(board, "black", forcedChain.r, forcedChain.c);
+        legalTargets = contMoves;
+
+        render();
+        return;
+      }
+
+      // Otherwise end turn
+      forcedChain = null;
+      selected = null;
+      legalTargets = [];
+      turn = "white";
+      render();
+
+      setTimeout(() => {
+        if (!getOutcome(board)) computerMove();
+      }, 200);
+    }
+  }
+
+  // ---------------- AI MOVE ----------------
+  function computerMove(){
+    const best = pickBestMove(board, AI_DEPTH);
+    if (!best){
+      turn = "black";
+      render();
+      return;
+    }
+
+    // Apply AI move (it already includes full multi-jump sequence)
+    applyMove(board, best);
+
+    // AI may have additional forced chain only if we had encoded partial moves (we don't),
+    // because we generate full capture sequences. So we can switch turn.
+    forcedChain = null;
+    selected = null;
+    legalTargets = [];
+    turn = "black";
+    render();
+  }
+
+  // ---------------- LEGAL MOVES ----------------
+  function generateLegalMoves(state, side){
+    // side: "black" or "white"
+    // returns list of moves:
+    // { sr, sc, path:[{r,c},...], captures:[{r,c},...], isCapture:boolean }
+    const allCaptures = generateAllCaptureSequences(state, side);
+    if (allCaptures.length) return allCaptures;
+    return generateAllSimpleMoves(state, side);
+  }
+
+  function generateAllSimpleMoves(state, side){
+    const moves = [];
+    for (let r=0;r<8;r++){
+      for (let c=0;c<8;c++){
+        const p = state[r][c];
+        if (!p || getSide(p)!==side) continue;
+
+        const dirs = getMoveDirs(p, /*forCapture*/false);
+        for (const [dr,dc] of dirs){
+          const nr=r+dr, nc=c+dc;
+          if (inBounds(nr,nc) && state[nr][nc]===null){
+            moves.push({
+              sr:r, sc:c,
+              path:[{r,c},{r:nr,c:nc}],
+              captures:[],
+              isCapture:false
+            });
+          }
+        }
+      }
+    }
+    return moves;
+  }
+
+  function generateAllCaptureSequences(state, side){
+    const all = [];
+    for (let r=0;r<8;r++){
+      for (let c=0;c<8;c++){
+        const p = state[r][c];
+        if (!p || getSide(p)!==side) continue;
+        const seqs = generateCaptureMovesFrom(state, side, r, c);
+        all.push(...seqs);
+      }
+    }
+    return all;
+  }
+
+  function generateCaptureMovesFrom(state, side, sr, sc){
+    const p = state[sr][sc];
+    if (!p || getSide(p)!==side) return [];
+
+    // DFS to generate all capture sequences (multi-jump)
+    const results = [];
+    const start = {r:sr,c:sc};
+
+    function dfs(curState, curPos, path, captures){
+      const piece = curState[curPos.r][curPos.c];
+      const dirs = getMoveDirs(piece, /*forCapture*/true);
+      const enemySide = (side==="black") ? "white" : "black";
+
+      let extended = false;
+
+      for (const [dr,dc] of dirs){
+        const mr = curPos.r + dr;
+        const mc = curPos.c + dc;
+        const lr = curPos.r + 2*dr;
+        const lc = curPos.c + 2*dc;
+
+        if (!inBounds(lr,lc) || !inBounds(mr,mc)) continue;
+        if (curState[lr][lc] !== null) continue;
+
+        const midPiece = curState[mr][mc];
+        if (!midPiece || getSide(midPiece)!==enemySide) continue;
+
+        // apply this capture step on a cloned board
+        const next = cloneBoard(curState);
+        next[lr][lc] = next[curPos.r][curPos.c];
+        next[curPos.r][curPos.c] = null;
+        next[mr][mc] = null;
+
+        // Note: promotion happens at end of full move, not mid-chain (common rule).
+        dfs(next, {r:lr,c:lc}, [...path, {r:lr,c:lc}], [...captures, {r:mr,c:mc}]);
+        extended = true;
+      }
+
+      if (!extended && captures.length>0){
+        // finalize one sequence
+        results.push({
+          sr:start.r, sc:start.c,
+          path,
+          captures,
+          isCapture:true
+        });
+      }
+    }
+
+    dfs(state, start, [start], []);
+    return results;
+  }
+
+  // ---------------- APPLY MOVE ----------------
+  function applyMove(state, move){
+    // move.path includes starting square as first element
+    const from = move.path[0];
+    const to = move.path[move.path.length-1];
+
+    const piece = state[from.r][from.c];
+    state[from.r][from.c] = null;
+    state[to.r][to.c] = piece;
+
+    // remove captured pieces
+    for (const cap of move.captures){
+      state[cap.r][cap.c] = null;
+    }
+
+    // promotion at end of turn
+    promoteIfNeeded(state, to.r, to.c);
+
+    // For HUMAN chaining: after a capture, check if more captures exist from new position.
+    // For AI we already generate full sequences, but for safety, we still compute.
+    if (move.isCapture){
+      const side = getSide(state[to.r][to.c]);
+      const moreCaps = generateCaptureMovesFrom(state, side, to.r, to.c);
+      return {
+        chainContinues: moreCaps.length > 0,
+        newPos: {r:to.r, c:to.c}
+      };
+    }
+
+    return { chainContinues:false, newPos:{r:to.r,c:to.c} };
+  }
+
+  function promoteIfNeeded(state, r, c){
+    const p = state[r][c];
+    if (!p) return;
+    if (p==="b" && r===0) state[r][c] = "B";
+    if (p==="w" && r===7) state[r][c] = "W";
+  }
+
+  // ---------------- MINIMAX AI ----------------
+  function pickBestMove(state, depth){
+    const moves = generateLegalMoves(state, "white");
+    if (!moves.length) return null;
+
+    // move ordering: captures first + longer captures first
+    moves.sort((a,b)=>{
+      const ac = a.isCapture ? 1 : 0;
+      const bc = b.isCapture ? 1 : 0;
+      if (bc !== ac) return bc - ac;
+      return (b.captures.length || 0) - (a.captures.length || 0);
+    });
+
+    let bestMove = null;
+    let bestScore = -Infinity;
+
+    for (const m of moves){
+      const next = cloneBoard(state);
+      applyMove(next, m); // includes promotion at end
+      const score = minimax(next, depth-1, false, -Infinity, Infinity);
+      if (score > bestScore){
+        bestScore = score;
+        bestMove = m;
+      }
+    }
+    return bestMove;
+  }
+
+  function minimax(state, depth, isMaximizing, alpha, beta){
+    const outcome = getOutcome(state);
+    if (outcome === "White wins!") return  99999;
+    if (outcome === "Black wins!") return -99999;
+
+    if (depth === 0) return evaluate(state);
+
+    const side = isMaximizing ? "white" : "black";
+    let moves = generateLegalMoves(state, side);
+    if (!moves.length) return isMaximizing ? -99999 : 99999;
+
+    // ordering: captures first + longer chains
+    moves.sort((a,b)=>{
+      const ac = a.isCapture ? 1 : 0;
+      const bc = b.isCapture ? 1 : 0;
+      if (bc !== ac) return bc - ac;
+      return (b.captures.length || 0) - (a.captures.length || 0);
+    });
+
+    if (isMaximizing){
+      let best = -Infinity;
+      for (const m of moves){
+        const next = cloneBoard(state);
+        applyMove(next, m);
+        best = Math.max(best, minimax(next, depth-1, false, alpha, beta));
+        alpha = Math.max(alpha, best);
+        if (beta <= alpha) break;
+      }
+      return best;
+    } else {
+      let best = Infinity;
+      for (const m of moves){
+        const next = cloneBoard(state);
+        applyMove(next, m);
+        best = Math.min(best, minimax(next, depth-1, true, alpha, beta));
+        beta = Math.min(beta, best);
+        if (beta <= alpha) break;
+      }
+      return best;
+    }
+  }
+
+  // Evaluation: positive favors WHITE (AI), negative favors BLACK (human)
+  function evaluate(state){
+    let score = 0;
+
+    for (let r=0;r<8;r++){
+      for (let c=0;c<8;c++){
+        const p = state[r][c];
+        if (!p) continue;
+
+        // material
+        if (p==="w") score += 10;
+        if (p==="W") score += 18;
+        if (p==="b") score -= 10;
+        if (p==="B") score -= 18;
+
+        // positional
+        // encourage men to advance toward kinging
+        if (p==="w") score += r * 0.6;
+        if (p==="b") score -= (7-r) * 0.6;
+
+        // center preference
+        if (c>=2 && c<=5){
+          if (p==="w"||p==="W") score += 0.3;
+          if (p==="b"||p==="B") score -= 0.3;
+        }
+      }
+    }
+
+    // mobility
+    const wm = generateLegalMoves(state,"white").length;
+    const bm = generateLegalMoves(state,"black").length;
+    score += (wm - bm) * 0.12;
+
+    return score;
+  }
+
+  // ---------------- GAME END ----------------
+  function getOutcome(state){
+    let w=0,b=0;
+    for (let r=0;r<8;r++){
+      for (let c=0;c<8;c++){
+        const p = state[r][c];
+        if (p==="w"||p==="W") w++;
+        if (p==="b"||p==="B") b++;
+      }
+    }
+    if (w===0) return "Black wins!";
+    if (b===0) return "White wins!";
+
+    const wm = generateLegalMoves(state,"white");
+    const bm = generateLegalMoves(state,"black");
+    if (!wm.length) return "Black wins!";
+    if (!bm.length) return "White wins!";
+    return null;
+  }
+
+  // ---------------- HELPERS ----------------
+  function getSide(piece){
+    if (piece==="b"||piece==="B") return "black";
+    if (piece==="w"||piece==="W") return "white";
+    return null;
+  }
+
+  function isKing(piece){ return piece==="B" || piece==="W"; }
+
+  // Movement directions for a piece.
+  // For American checkers:
+  // - Men move/capture forward only.
+  // - Kings move/capture both directions.
+  function getMoveDirs(piece, forCapture){
+    // return list of [dr,dc] where dr is +/-1 (simple) or +/-1 (capture step uses mid square)
+    // We still return +/-1 steps; capture uses 2*dr in generator.
+    if (isKing(piece)){
+      return [[1,-1],[1,1],[-1,-1],[-1,1]];
+    }
+    // men:
+    if (piece==="w") return [[1,-1],[1,1]];   // white goes down
+    if (piece==="b") return [[-1,-1],[-1,1]]; // black goes up
+    return [];
+  }
+
+  function cloneBoard(state){ return state.map(row=>row.slice()); }
+  function inBounds(r,c){ return r>=0 && r<8 && c>=0 && c<8; }
+
+  // ---------------- UI BUTTONS ----------------
+  document.getElementById("resetBtn").onclick = () => {
+    board = makeInitialBoard();
+    selected = null;
+    legalTargets = [];
+    forcedChain = null;
+    turn = "black";
+    render();
+  };
+
+  document.getElementById("ai2").onclick = () => { AI_DEPTH=2; statusEl.innerHTML="AI depth set to <b>2</b> (fast)."; };
+  document.getElementById("ai4").onclick = () => { AI_DEPTH=4; statusEl.innerHTML="AI depth set to <b>4</b> (good)."; };
+  document.getElementById("ai6").onclick = () => { AI_DEPTH=6; statusEl.innerHTML="AI depth set to <b>6</b> (stronger/slower)."; };
+
+  // ---------------- START ----------------
+  render();
+</script>
+
+</body>
+</html>
